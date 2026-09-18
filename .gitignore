@@ -1,1 +1,22 @@
 app_client
+MeetLog-Server
+
+# Python cache
+nogitMeetlog-Server/__pycache__/
+nogitMeetlog-Server/*.py[cod]
+
+# Logs and temporary files
+nogitMeetlog-Server/*.log
+nogitMeetlog-Server/*.swp
+nogitMeetlog-Server/*.save
+
+# Local environment secrets
+nogitMeetlog-Server/.env
+nogitMeetlog-Server/.env.*
+!nogitMeetlog-Server/.env.example
+
+# Collected data and generated reports
+nogitMeetlog-Server/attention_logs/
+nogitMeetlog-Server/summary_reports/
+nogitMeetlog-Server/sensor_data_log.csv
+nogitMeetlog-Server/ambient_logs.jsonl
