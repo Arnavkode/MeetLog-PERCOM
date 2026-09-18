@@ -1,0 +1,85 @@
+timestamp,attentive_percent,avg_temp,avg_humidity,avg_light,avg_co2,door_status,motion_status,productivity_A,productivity_E,productivity_MPS,suggestion,graph
+2025-09-08T17:08:34.994279,55.4,35.1,79.9,70.6,1142.0,Open,Inactivity,55.4,0.0,44.32,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 55.4%.
+
+💡Suggestion:
+- Recommend typing on laptop or taking notes to boost attentiveness.
+- Suggest moving to a better-ventilated, cooler space.",summary_reports/ambient_moto g34 5G_bc7dbd.png
+2025-09-19T10:58:51.232909,20.0,35.1,79.9,70.6,1142.0,Open,Inactivity,20.0,0.0,16.0,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 20.0%.
+
+💡Suggestion:
+- Recommend presenting standing, typing on laptop, or taking notes.
+- Move to a cooler, better-ventilated space.",summary_reports/ambient_moto g34 5G_a89985.png
+2025-09-19T11:01:23.723734,90.0,35.1,79.9,70.6,1142.0,Open,Inactivity,90.0,0.0,72.0,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 90.0%.
+
+💡Suggestion:
+- Sustain current focus with light reinforcement.
+- Move to a better-ventilated, cooler space.",summary_reports/ambient_moto g34 5G_ffe931.png
+2025-09-19T11:03:47.368396,100.0,35.1,79.9,70.6,1142.0,Open,Inactivity,100.0,0.0,80.0,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 100.0%.
+
+💡Suggestion:
+- Sustain current focus using light reinforcement activities such as taking notes.
+- Suggest moving to a better-ventilated and cooler space.",summary_reports/ambient_moto g34 5G_df162d.png
+2026-06-05T17:35:50.163350,95.7,35.1,79.9,70.6,1142.0,Open,Inactivity,95.7,0.0,76.56,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 95.7%.
+
+💡Suggestion:
+- Sustain the current focus with light active participation.
+- Move to a cooler/less humid/better-ventilated/brighter space or adjust the room conditions.",summary_reports/ambient_moto g34 5G_1e9e21.png
+2026-06-29T19:07:20.150652,0.0,35.1,79.9,70.6,1142.0,Open,Inactivity,0.0,0.0,0.0,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 0.0%.
+
+💡Suggestion:
+- Re-engage by presenting, typing notes, taking notes, or writing on the board.
+- Move to a cooler/less humid/better-ventilated/brighter space or adjust the room conditions.",summary_reports/ambient_moto g34 5G_39293a.png
+2026-06-29T19:22:29.264769,60.0,35.1,79.9,70.6,1142.0,Open,Inactivity,60.0,0.0,48.0,"📊 Ambient Report:
+- Temperature: 35.1°C
+- Humidity: 79.9%
+- Light: 70.6
+- CO₂: 1142 ppm
+
+👀 Attention:
+Your attentive percent was 60.0%.
+
+💡Suggestion:
+- Maintain focus with active participation such as note-taking or presenting.
+- Move to a cooler/less humid/better-ventilated/brighter space or adjust the room conditions.",summary_reports/ambient_moto g34 5G_08f602.png

@@ -10,6 +10,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 from flask import Flask, request, jsonify
 
+# new pasted in
 app = Flask(__name__)
 
 logging.basicConfig(
@@ -52,9 +53,13 @@ meeting_state = {
 # ================== HELPERS ==================
 def triangular_score(x, m, r):
     """
-    Triangular score in [0,1]. Return None when x is missing.
+    Triangular score in [0,1]. Return None when x is missing/NaN.
     """
-    if x is None:
+    try:
+        if x is None or pd.isna(x):
+            return None
+        x = float(x)
+    except Exception:
         return None
     return max(0.0, 1.0 - abs(x - m) / r)
 
@@ -486,6 +491,285 @@ def _collect_owner_summary_from_snapshot(snapshot_dict):
         }
     }
 
+
+# ================== LIVE/FINAL REPORT HELPERS ==================
+
+def _num_or_none(x):
+    """
+    Convert pandas/numpy scalars to a plain float, returning None for missing values.
+    """
+    try:
+        if x is None or pd.isna(x):
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def _round_or_none(x, digits=1):
+    x = _num_or_none(x)
+    return None if x is None else round(x, digits)
+
+def _fmt_num(x, digits=1, suffix=""):
+    x = _num_or_none(x)
+    if x is None:
+        return "N/A"
+    return f"{x:.{digits}f}{suffix}"
+
+def _read_latest_ambient_window(window_rows=300):
+    """
+    Read the latest ambient sensor window.
+    Returns a dict with raw dataframe window + averaged fields.
+    This is intentionally non-fatal because live reports should not crash
+    just because the ambient CSV is temporarily unavailable.
+    """
+    empty = pd.DataFrame(columns=[
+        "Timestamp",
+        "Temperature",
+        "Humidity",
+        "Light Intensity",
+        "Co2 Concentration",
+        "Door Status",
+        "Motion Status",
+    ])
+
+    try:
+        df = pd.read_csv(LOCAL_FILE_PATH)
+        last = df.tail(window_rows).copy()
+    except Exception as e:
+        logging.warning(f"Report: sensor file not available or malformed: {e}")
+        last = empty
+
+    def mean_col(col):
+        if col not in last.columns or last.empty:
+            return None
+        return _num_or_none(pd.to_numeric(last[col], errors="coerce").mean())
+
+    def mode_col(col):
+        if col not in last.columns or last.empty:
+            return "Unknown"
+        mode = last[col].mode()
+        return str(mode.iloc[0]) if not mode.empty else "Unknown"
+
+    return {
+        "df": last,
+        "avg_temp": mean_col("Temperature"),
+        "avg_humidity": mean_col("Humidity"),
+        "avg_light": mean_col("Light Intensity"),
+        "avg_co2": mean_col("Co2 Concentration"),
+        "door_status": mode_col("Door Status"),
+        "motion_status": mode_col("Motion Status"),
+    }
+
+def _rule_based_tip(attentive_percent, avg_temp, avg_humidity, avg_light, avg_co2):
+    """
+    Safe fallback if the LLM call fails. Keeps the response shape identical.
+    """
+    if attentive_percent < 50:
+        att_tip = "Re-engage by presenting, typing notes, taking notes, or writing on the board."
+    elif attentive_percent <= 85:
+        att_tip = "Maintain focus with active participation such as note-taking or presenting."
+    else:
+        att_tip = "Sustain the current focus with light active participation."
+
+    env_issues = []
+    if _num_or_none(avg_temp) is not None and avg_temp > 28:
+        env_issues.append("cooler")
+    if _num_or_none(avg_humidity) is not None and avg_humidity > 70:
+        env_issues.append("less humid")
+    if _num_or_none(avg_co2) is not None and avg_co2 > 800:
+        env_issues.append("better-ventilated")
+    if _num_or_none(avg_light) is not None and avg_light < 150:
+        env_issues.append("brighter")
+
+    if env_issues:
+        env_tip = f"Move to a {'/'.join(env_issues)} space or adjust the room conditions."
+    else:
+        env_tip = "No environmental changes needed."
+
+    return f"Suggestion:\n- {att_tip}\n- {env_tip}"
+
+def _build_llm_tip(attentive_percent, avg_temp, avg_humidity, avg_light, avg_co2, door_status, motion_status):
+    prompt = f"""
+You are a meeting attentiveness assistant. You receive participant metrics:
+
+- Attention percentage: {attentive_percent}%
+- Room conditions:
+    • Temperature: {_fmt_num(avg_temp, 1, "°C")}
+    • Humidity: {_fmt_num(avg_humidity, 1, "%")}
+    • Light: {_fmt_num(avg_light, 1, " lux")}
+    • CO₂: {_fmt_num(avg_co2, 0, " ppm")}
+- Room status:
+    • Door: {door_status}
+    • Motion: {motion_status}
+
+Task:
+Return exactly two clear, actionable bullet points under the heading "Suggestion:".
+
+- First bullet: attentiveness recommendation based only on the given attention percentage.
+Use only these attentive activities: presenting (sitting or standing), typing on laptop, taking notes, writing on board, erasing board.
+Guidance:
+    • If <50% → recommend 2–3 attentive activities.
+    • If 50–85% → recommend 1–2 activities.
+    • If >85% → recommend sustaining current focus with light reinforcement.
+
+- Second bullet: environment recommendation.
+If any condition exceeds comfort ranges (Temp >28°C, Humidity >70%, CO₂ >800 ppm, Light <150 lux) → suggest moving to a better-ventilated, cooler/brighter space as appropriate.
+If all are within comfort ranges → write: "No environmental changes needed."
+
+Rules:
+- Heading must be exactly "Suggestion:"
+- Output must be only two bullets (no extras, no stars, no emojis, no long explanations).
+- Keep total under 50 words.
+
+Format strictly:
+Suggestion:
+- <attentiveness suggestion>
+- <environment suggestion>
+"""
+
+    try:
+        start = time.time()
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        elapsed = time.time() - start
+        logging.info(f"LLM call latency: {elapsed:.3f} seconds")
+        return completion.choices[0].message.content
+    except Exception as e:
+        logging.warning(f"LLM suggestion failed; using fallback tip: {e}")
+        return _rule_based_tip(attentive_percent, avg_temp, avg_humidity, avg_light, avg_co2)
+
+def _build_suggestion_text(attentive_percent, avg_temp, avg_humidity, avg_light, avg_co2, llm_tip):
+    return (
+        f"📊 Ambient Report:\n"
+        f"- Temperature: {_fmt_num(avg_temp, 1, '°C')}\n"
+        f"- Humidity: {_fmt_num(avg_humidity, 1, '%')}\n"
+        f"- Light: {_fmt_num(avg_light, 1)}\n"
+        f"- CO₂: {_fmt_num(avg_co2, 0, ' ppm')}\n\n"
+        f"👀 Attention:\n"
+        f"Your attentive percent was {attentive_percent:.1f}%.\n\n"
+        f"💡{llm_tip}"
+    )
+
+def _build_user_report_payload(user_id, report_type="live", persist_user_summary=False):
+    """
+    Build the exact JSON payload consumed by the Flutter UI.
+
+    report_type="live"  : non-destructive snapshot, safe to call every x seconds.
+    report_type="final" : same payload, optionally persisted by caller/end_meeting.
+
+    This function does NOT reset counters and does NOT mutate meeting_state.
+    """
+    user = users_data.get(user_id)
+    if not user:
+        raise KeyError(f"No data for user_id={user_id}")
+
+    total_scans = int(user.get("total_scans", 0))
+    attentive_count = int(user.get("attentive_count", 0))
+    attentive_percent = (attentive_count / total_scans * 100.0) if total_scans > 0 else 0.0
+    attentive_percent = round(float(attentive_percent), 1)
+
+    ambient = _read_latest_ambient_window(window_rows=300)
+    last = ambient["df"]
+    avg_temp = ambient["avg_temp"]
+    avg_humidity = ambient["avg_humidity"]
+    avg_light = ambient["avg_light"]
+    avg_co2 = ambient["avg_co2"]
+    door_status = ambient["door_status"]
+    motion_status = ambient["motion_status"]
+
+    llm_tip = _build_llm_tip(
+        attentive_percent,
+        avg_temp,
+        avg_humidity,
+        avg_light,
+        avg_co2,
+        door_status,
+        motion_status,
+    )
+
+    plot_file = ""
+    plot_base64 = ""
+    if last is not None and not last.empty:
+        try:
+            plot_data = generate_ambient_plot(last, user_id)
+            plot_file = plot_data["file_path"]
+            plot_base64 = plot_data["base64"]
+        except Exception as e:
+            logging.warning(f"Could not generate ambient plot for report: {e}")
+
+    final_suggestion = _build_suggestion_text(
+        attentive_percent,
+        avg_temp,
+        avg_humidity,
+        avg_light,
+        avg_co2,
+        llm_tip,
+    )
+
+    productivity_score = compute_meeting_productivity(
+        [attentive_percent],
+        {
+            "light": avg_light,
+            "temp": avg_temp,
+            "humidity": avg_humidity,
+            "co2": avg_co2,
+        },
+    )
+
+    productive = bool(productivity_score["MPS"] >= 60)
+
+    if persist_user_summary:
+        summary_row = {
+            "timestamp": datetime.now().isoformat(),
+            "attentive_percent": attentive_percent,
+            "avg_temp": _round_or_none(avg_temp, 1),
+            "avg_humidity": _round_or_none(avg_humidity, 1),
+            "avg_light": _round_or_none(avg_light, 1),
+            "avg_co2": _round_or_none(avg_co2, 0),
+            "door_status": door_status,
+            "motion_status": motion_status,
+            "productivity_A": productivity_score["A"],
+            "productivity_E": productivity_score["E"],
+            "productivity_MPS": productivity_score["MPS"],
+            "suggestion": final_suggestion,
+            "graph": plot_file,
+        }
+
+        summary_file = f"{ATTENTION_LOG_DIR}/user_{user_id}_summary.csv"
+        pd.DataFrame([summary_row]).to_csv(
+            summary_file,
+            index=False,
+            mode="a",
+            header=not os.path.exists(summary_file),
+        )
+
+    return {
+        "report_type": report_type,
+        "generated_at": datetime.now().isoformat(),
+        "meeting_active": bool(user.get("meeting_active", False)),
+        "attentive_percent": float(attentive_percent),
+        "attentive_count": attentive_count,
+        "total_scans": total_scans,
+        "avg_temp": _round_or_none(avg_temp, 1),
+        "avg_humidity": _round_or_none(avg_humidity, 1),
+        "avg_light": _round_or_none(avg_light, 1),
+        "avg_co2": _round_or_none(avg_co2, 0),
+        "door_status": str(door_status),
+        "motion_status": str(motion_status),
+        "productivity": {
+            "A": float(productivity_score["A"]),
+            "E": float(productivity_score["E"]),
+            "MPS": float(productivity_score["MPS"]),
+            "env_scores": {k: float(v) for k, v in productivity_score["env_scores"].items()},
+        },
+        "productive": productive,
+        "suggestion": str(final_suggestion),
+        "graph": str(plot_base64),
+    }
+
+
 # ================== ROUTES ==================
     
 @app.route("/predict", methods=["POST"])
@@ -588,8 +872,50 @@ def attention_poke():
         logging.error(f"❌ Error in /attention_poke: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/live_report", methods=["POST"])
+def live_report():
+    """
+    Non-destructive report endpoint.
+
+    This is the endpoint the app should poll every x seconds.
+    It returns the same fields as /end_meeting, but it does NOT:
+      - mark the user as ended
+      - reset users_data
+      - mutate meeting_state
+      - write final meeting summary files
+    """
+    try:
+        data = request.get_json(force=True)
+        user_id = data["user_id"]
+        logging.info(f"Live Report Request Payload Size : {len(str(data))} bytes")
+
+        resp = _build_user_report_payload(
+            user_id=user_id,
+            report_type="live",
+            persist_user_summary=False,
+        )
+
+        logging.info(f"Live Report Response Payload Size : {len(str(resp))} bytes")
+        return jsonify(resp)
+
+    except KeyError as e:
+        logging.warning(f"Live report requested before user exists: {e}")
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logging.error(f"❌ Error in /live_report: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/end_meeting", methods=["POST"])
 def end_meeting():
+    """
+    Destructive/final endpoint.
+
+    This should be called only when the user presses Stop.
+    It returns one final report, persists the per-user summary, snapshots the
+    user for owner-level reporting, resets that user's live counters, and if
+    all expected users have ended, writes the final owner summary.
+    """
     try:
         data = request.get_json(force=True)
         user_id = data["user_id"]
@@ -599,180 +925,62 @@ def end_meeting():
         if not user:
             return jsonify({"error": "No data for this user"}), 404
 
-        attentive_percent = (user["attentive_count"] / user["total_scans"] * 100) if user["total_scans"] > 0 else 0.0
-        attentive_percent = round(attentive_percent, 1)
-        
-        df = pd.read_csv(LOCAL_FILE_PATH)
-        last = df.tail(300)
-
-        avg_temp = pd.to_numeric(last["Temperature"], errors='coerce').mean()
-        avg_humidity = pd.to_numeric(last["Humidity"], errors='coerce').mean()
-        avg_light = pd.to_numeric(last["Light Intensity"], errors='coerce').mean()
-        avg_co2 = pd.to_numeric(last["Co2 Concentration"], errors='coerce').mean()
-
-        door_status = last["Door Status"].mode().iloc[0] if not last["Door Status"].mode().empty else "Unknown"
-        motion_status = last["Motion Status"].mode().iloc[0] if not last["Motion Status"].mode().empty else "Unknown"
-
-        
-        
-        prompt = f"""
-        You are a meeting attentiveness assistant. You receive participant metrics:
-
-        - Attention percentage: {attentive_percent}%
-        - Room conditions:
-            • Temperature: {avg_temp:.1f}°C
-            • Humidity: {avg_humidity:.1f}%
-            • Light: {avg_light:.1f} lux
-            • CO₂: {avg_co2:.0f} ppm
-        - Room status:
-            • Door: {door_status}
-            • Motion: {motion_status}
-
-        Task:
-        Return exactly two clear, actionable bullet points under the heading "Suggestion:".
-
-        - First bullet: attentiveness recommendation based only on the given attention percentage.  
-        Use only these attentive activities: presenting (sitting or standing), typing on laptop, taking notes, writing on board, erasing board.  
-        Guidance:  
-            • If <50% → recommend 2–3 attentive activities.  
-            • If 50–85% → recommend 1–2 activities.  
-            • If >85% → recommend sustaining current focus with light reinforcement.  
-
-        - Second bullet: environment recommendation.  
-        If any condition exceeds comfort ranges (Temp >28°C, Humidity >70%, CO₂ >800 ppm, Light <150 lux) → suggest moving to a better-ventilated, cooler/brighter space as appropriate.  
-        If all are within comfort ranges → write: "No environmental changes needed."  
-
-        Rules:
-        - Heading must be exactly "Suggestion:"  
-        - Output must be only two bullets (no extras, no stars, no emojis, no long explanations).  
-        - Keep total under 50 words.
-
-        Format strictly:
-        Suggestion:
-        - <attentiveness suggestion>
-        - <environment suggestion>
-        """
-
-
-        start = time.time()
-        completion = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        elapsed = time.time() - start
-        llm_tip = completion.choices[0].message.content
-        logging.info(f"LLM call latency: {elapsed:.3f} seconds")
-
-        plot_data = generate_ambient_plot(last, user_id)
-        plot_file = plot_data["file_path"]
-        plot_base64 = plot_data["base64"]
-
-        final_suggestion = build_suggestion(
-            attentive_percent, avg_temp, avg_humidity, avg_light, avg_co2,
-            door_status, motion_status, llm_tip
+        resp = _build_user_report_payload(
+            user_id=user_id,
+            report_type="final",
+            persist_user_summary=True,
         )
 
-        # Productivity score calculation
-        productivity_score = compute_meeting_productivity(
-            [attentive_percent],
-            {
-                "light": avg_light,
-                "temp": avg_temp,
-                "humidity": avg_humidity,
-                "co2": avg_co2
-            }
-        )
-        
-        # Individual user summary
-        summary_row = {
-            "timestamp": datetime.now().isoformat(),
-            "attentive_percent": round(attentive_percent, 1),
-            "avg_temp": round(avg_temp, 1),
-            "avg_humidity": round(avg_humidity, 1),
-            "avg_light": round(avg_light, 1),
-            "avg_co2": round(avg_co2, 0),
-            "door_status": door_status,
-            "motion_status": motion_status,
-            "productivity_A": productivity_score["A"],
-            "productivity_E": productivity_score["E"],
-            "productivity_MPS": productivity_score["MPS"],
-            "suggestion": final_suggestion,
-            "graph": plot_file
-        }
-        
-        summary_file = f"{ATTENTION_LOG_DIR}/user_{user_id}_summary.csv"
-        pd.DataFrame([summary_row]).to_csv(
-            summary_file,
-            index=False,
-            mode='a',
-            header=not os.path.exists(summary_file)
-        )
+        attentive_percent = float(resp["attentive_percent"])
+        productivity_score = resp["productivity"]
+        productive = bool(resp["productive"])
 
-        # Mark user ended & SNAPSHOT BEFORE reset
+        # Mark user ended & SNAPSHOT BEFORE reset.
         users_data[user_id]["meeting_active"] = False
         meeting_state["ended_users"].add(user_id)
         meeting_state["snapshot"][user_id] = {
             "user_id": user_id,
             "attentive_count": users_data[user_id]["attentive_count"],
             "total_scans": users_data[user_id]["total_scans"],
-            "attentive_percent": float(attentive_percent)
+            "attentive_percent": attentive_percent,
         }
-        
-        productive = bool(productivity_score["MPS"] >= 60)
-        
+
         if productive:
             logging.info(f"🎉 Meeting for user {user_id} was PRODUCTIVE! MPS={productivity_score['MPS']:.1f}%")
         else:
             logging.info(f"⚠️ Meeting for user {user_id} was NOT productive. MPS={productivity_score['MPS']:.1f}%")
 
-        # Reset this user's live counters (safe; snapshot kept)
+        # Reset this user's live counters only after the final report/snapshot.
         users_data[user_id] = {
             "last_status": "unknown",
             "attentive_count": 0,
             "total_scans": 0,
-            "meeting_active": False
+            "meeting_active": False,
         }
         logging.info(f"✅ Reset counts for user {user_id} after meeting end.")
 
-        # If all expected users ended, build FINAL owner summary from SNAPSHOT
+        # If all expected users ended, build FINAL owner summary from SNAPSHOT.
         if meeting_state["expected_users"] and meeting_state["ended_users"] >= meeting_state["expected_users"]:
             logging.info("🎉 All expected users ended. Generating final owner report from snapshot...")
             summary_data = _collect_owner_summary_from_snapshot(meeting_state["snapshot"])
             summary_file2, plots = _save_owner_summary_files(summary_data)
-            logging.info(f"✅ Final owner summary generated: overall={summary_data['overall_attentive_percent']}%, "
-                         f"productive={summary_data['productive']}, file={summary_file2}, plots={plots}")
+            logging.info(
+                f"✅ Final owner summary generated: overall={summary_data['overall_attentive_percent']}%, "
+                f"productive={summary_data['productive']}, file={summary_file2}, plots={plots}"
+            )
 
-            # reset meeting state
+            # Reset meeting coordinator state after all final reports are done.
             meeting_state["meeting_active"] = False
             meeting_state["start_time"] = None
             meeting_state["expected_users"].clear()
             meeting_state["ended_users"].clear()
             meeting_state["snapshot"].clear()
 
-        resp = {
-            "attentive_percent": float(round(attentive_percent, 1)),
-            "avg_temp": float(round(avg_temp, 1)),
-            "avg_humidity": float(round(avg_humidity, 1)),
-            "avg_light": float(round(avg_light, 1)),
-            "avg_co2": float(round(avg_co2, 0)),
-            "door_status": str(door_status),
-            "motion_status": str(motion_status),
-            "productivity": {
-                "A": float(productivity_score["A"]),
-                "E": float(productivity_score["E"]),
-                "MPS": float(productivity_score["MPS"]),
-                "env_scores": {k: float(v) for k, v in productivity_score["env_scores"].items()}
-            },
-            "productive": productive,
-            "suggestion": str(final_suggestion),
-            "graph": str(plot_base64),
-        }
-
         logging.info(f"End Meeting Response Payload Size : {len(str(resp))} bytes")
         return jsonify(resp)
 
     except Exception as e:
-        logging.error(f"❌ Error: {e}")
+        logging.error(f"❌ Error in /end_meeting: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/owner_summary", methods=["GET"])
