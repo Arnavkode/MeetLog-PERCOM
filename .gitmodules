@@ -1,0 +1,3 @@
+[submodule "app_client"]
+	path = app_client
+	url = https://github.com/Arnavkode/MeetLog
