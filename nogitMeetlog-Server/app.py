@@ -79,9 +79,9 @@ def compute_meeting_productivity(attentiveness, sensors,
 
     ideals = {
         'light':   (400, 200),   # lux
-        'temp':    (22, 2),      # °C
-        'humidity':(45, 15),     # %
-        'co2':     (600, 400)    # ppm
+        'temp':    (23.5, 2),      # °C
+        'humidity':(55, 15),     # %
+        'co2':     (400, 400)    # ppm
     }
 
     # Attentiveness normalized to [0,1]
